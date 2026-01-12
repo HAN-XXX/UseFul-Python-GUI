@@ -1,0 +1,70 @@
+import os
+import shutil
+from datetime import datetime
+from PIL import Image
+from PIL.ExifTags import TAGS
+
+def get_photo_year(file_path):
+    try:
+        # EXIF 데이터 읽기
+        image = Image.open(file_path)
+        exif_data = image._getexif()
+        if exif_data:
+            for tag, value in exif_data.items():
+                tag_name = TAGS.get(tag, tag)
+                if tag_name == "DateTimeOriginal":
+                    # EXIF의 DateTimeOriginal에서 연도 추출
+                    return datetime.strptime(value, "%Y:%m:%d %H:%M:%S").year
+    except Exception as e:
+        print(f"메타데이터 읽기 실패: {file_path}, {e}")
+    return None
+
+def organize_photos(source_folder):
+    if not os.path.exists(source_folder):
+        print(f"폴더가 존재하지 않습니다: {source_folder}")
+        return
+
+    # 지원하는 파일 확장자
+    supported_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp'}
+
+    # 로그 파일 생성
+    log_file = os.path.join(source_folder, "log.txt")
+    with open(log_file, "w", encoding="utf-8") as log:
+        log.write("사진 정리 로그\n")
+        log.write("=" * 30 + "\n")
+
+        # 사진 파일 정리
+        for filename in os.listdir(source_folder):
+            file_path = os.path.join(source_folder, filename)
+
+            # 파일인지 확인 및 확장자 필터링
+            if os.path.isfile(file_path) and os.path.splitext(filename)[1].lower() in supported_extensions:
+                # 메타데이터에서 연도 가져오기
+                year = get_photo_year(file_path)
+                if not year:
+                    # 메타데이터가 없으면 파일의 수정 날짜 사용
+                    year = datetime.fromtimestamp(os.path.getmtime(file_path)).year
+
+                # 연도별 폴더 생성
+                target_folder = os.path.join(source_folder, str(year))
+                os.makedirs(target_folder, exist_ok=True)
+
+                # 중복 파일 처리
+                target_path = os.path.join(target_folder, filename)
+                base_name, ext = os.path.splitext(filename)
+                counter = 1
+                while os.path.exists(target_path):
+                    target_path = os.path.join(target_folder, f"{base_name}_{counter}{ext}")
+                    counter += 1
+
+                # 파일 이동
+                shutil.move(file_path, target_path)
+                print(f"파일 이동: {filename} -> {target_path}")
+                log.write(f"{filename} -> {target_path}\n")
+
+        log.write("=" * 30 + "\n")
+        log.write("정리 완료\n")
+
+if __name__ == "__main__":
+    source_folder = input("정리할 폴더 경로를 입력하세요: ")
+    organize_photos(source_folder)
