@@ -3,68 +3,209 @@ import shutil
 from datetime import datetime
 from PIL import Image
 from PIL.ExifTags import TAGS
+import customtkinter as ctk
+from customtkinter import CTk, CTkLabel, CTkButton, CTkEntry, CTkProgressBar, StringVar, IntVar
+import threading
+import queue
+
 
 def get_photo_year(file_path):
     try:
-        # EXIF 데이터 읽기
         image = Image.open(file_path)
         exif_data = image._getexif()
         if exif_data:
             for tag, value in exif_data.items():
                 tag_name = TAGS.get(tag, tag)
                 if tag_name == "DateTimeOriginal":
-                    # EXIF의 DateTimeOriginal에서 연도 추출
                     return datetime.strptime(value, "%Y:%m:%d %H:%M:%S").year
-    except Exception as e:
-        print(f"메타데이터 읽기 실패: {file_path}, {e}")
-    return None
+    except Exception:
+        pass
+    # EXIF 없으면 파일 수정 날짜 사용
+    try:
+        return datetime.fromtimestamp(os.path.getmtime(file_path)).year
+    except:
+        return datetime.now().year  # 최후의 수단
 
-def organize_photos(source_folder):
-    if not os.path.exists(source_folder):
-        print(f"폴더가 존재하지 않습니다: {source_folder}")
-        return
 
-    # 지원하는 파일 확장자
-    supported_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp'}
+class PhotoOrganizerApp:
+    def __init__(self):
+        ctk.set_appearance_mode("system")          # "system", "dark", "light"
+        ctk.set_default_color_theme("dark-blue")   # ★ 가장 예쁜 블루 포인트 느낌!
 
-    # 로그 파일 생성
-    log_file = os.path.join(source_folder, "log.txt")
-    with open(log_file, "w", encoding="utf-8") as log:
-        log.write("사진 정리 로그\n")
-        log.write("=" * 30 + "\n")
+        self.root = ctk.CTk()
+        self.root.title("사진 연도별 정리 도우미")
+        self.root.geometry("620x520")
+        self.root.resizable(False, False)
 
-        # 사진 파일 정리
-        for filename in os.listdir(source_folder):
+        # -------------------------------
+        #           UI 구성
+        # -------------------------------
+        self.label_title = ctk.CTkLabel(self.root, text="사진 연도별 정리", font=("Segoe UI", 24, "bold"))
+        self.label_title.pack(pady=(30, 10))
+
+        self.label_desc = ctk.CTkLabel(self.root, text="폴더를 선택하면 해당 연도의 사진을 자동으로 분류합니다",
+                                       font=("Segoe UI", 13))
+        self.label_desc.pack(pady=(0, 25))
+
+        # 경로 입력창 + 찾아보기
+        self.frame_path = ctk.CTkFrame(self.root, fg_color="transparent")
+        self.frame_path.pack(pady=10, padx=40, fill="x")
+
+        self.entry_path = ctk.CTkEntry(self.frame_path, placeholder_text="정리할 폴더 경로", height=38, font=("Segoe UI", 13))
+        self.entry_path.pack(side="left", fill="x", expand=True, padx=(0, 10))
+
+        self.btn_browse = ctk.CTkButton(self.frame_path, text="찾아보기", width=120, command=self.browse_folder)
+        self.btn_browse.pack(side="right")
+
+        # 상태 표시 영역
+        self.label_status = ctk.CTkLabel(self.root, text="준비됨...", text_color="gray", wraplength=500)
+        self.label_status.pack(pady=(30, 10))
+
+        self.progress = ctk.CTkProgressBar(self.root, width=460, height=12, mode="determinate")
+        self.progress.pack(pady=10)
+        self.progress.set(0)
+
+        self.label_count = ctk.CTkLabel(self.root, text="처리된 파일: 0 / 전체: 0", font=("Segoe UI", 12))
+        self.label_count.pack(pady=(5, 25))
+
+        # 시작 버튼 (포인트 컬러 강조)
+        self.btn_start = ctk.CTkButton(self.root, text="사진 정리 시작", width=220, height=50,
+                                       font=("Segoe UI", 16, "bold"), command=self.start_organizing_thread)
+        self.btn_start.pack(pady=20)
+
+        # 로그 창 (텍스트 박스)
+        self.text_log = ctk.CTkTextbox(self.root, height=140, width=560, state="disabled")
+        self.text_log.pack(pady=(10, 30), padx=30)
+
+        self.queue = queue.Queue()
+        self.root.after(100, self.check_queue)
+
+        self.organizing = False
+
+
+    def browse_folder(self):
+        folder = ctk.filedialog.askdirectory(title="사진이 있는 폴더를 선택하세요")
+        if folder:
+            self.entry_path.delete(0, "end")
+            self.entry_path.insert(0, folder)
+
+
+    def log(self, message):
+        self.queue.put(("log", message))
+
+
+    def update_status(self, text, color="gray"):
+        self.queue.put(("status", (text, color)))
+
+
+    def update_progress(self, value):
+        self.queue.put(("progress", value))
+
+
+    def update_count(self, processed, total):
+        self.queue.put(("count", f"처리된 파일: {processed} / 전체: {total}"))
+
+
+    def check_queue(self):
+        try:
+            while not self.queue.empty():
+                msg_type, data = self.queue.get_nowait()
+
+                if msg_type == "log":
+                    self.text_log.configure(state="normal")
+                    self.text_log.insert("end", data + "\n")
+                    self.text_log.see("end")
+                    self.text_log.configure(state="disabled")
+
+                elif msg_type == "status":
+                    text, color = data
+                    self.label_status.configure(text=text, text_color=color)
+
+                elif msg_type == "progress":
+                    self.progress.set(data)
+
+                elif msg_type == "count":
+                    self.label_count.configure(text=data)
+        except queue.Empty:
+            pass
+
+        self.root.after(100, self.check_queue)
+
+
+    def organize_photos(self, source_folder):
+        if not os.path.exists(source_folder):
+            self.update_status("폴더가 존재하지 않습니다!", "red")
+            return
+
+        supported_ext = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.heic'}
+
+        files = [f for f in os.listdir(source_folder)
+                 if os.path.isfile(os.path.join(source_folder, f))
+                 and os.path.splitext(f)[1].lower() in supported_ext]
+
+        total = len(files)
+        if total == 0:
+            self.update_status("정리할 사진 파일이 없습니다.", "orange")
+            return
+
+        processed = 0
+
+        for filename in files:
+            if not self.organizing:
+                return
+
             file_path = os.path.join(source_folder, filename)
+            year = get_photo_year(file_path)
 
-            # 파일인지 확인 및 확장자 필터링
-            if os.path.isfile(file_path) and os.path.splitext(filename)[1].lower() in supported_extensions:
-                # 메타데이터에서 연도 가져오기
-                year = get_photo_year(file_path)
-                if not year:
-                    # 메타데이터가 없으면 파일의 수정 날짜 사용
-                    year = datetime.fromtimestamp(os.path.getmtime(file_path)).year
+            target_folder = os.path.join(source_folder, str(year))
+            os.makedirs(target_folder, exist_ok=True)
 
-                # 연도별 폴더 생성
-                target_folder = os.path.join(source_folder, str(year))
-                os.makedirs(target_folder, exist_ok=True)
+            target_path = os.path.join(target_folder, filename)
+            base, ext = os.path.splitext(filename)
+            counter = 1
+            while os.path.exists(target_path):
+                target_path = os.path.join(target_folder, f"{base}_{counter}{ext}")
+                counter += 1
 
-                # 중복 파일 처리
-                target_path = os.path.join(target_folder, filename)
-                base_name, ext = os.path.splitext(filename)
-                counter = 1
-                while os.path.exists(target_path):
-                    target_path = os.path.join(target_folder, f"{base_name}_{counter}{ext}")
-                    counter += 1
-
-                # 파일 이동
+            try:
                 shutil.move(file_path, target_path)
-                print(f"파일 이동: {filename} -> {target_path}")
-                log.write(f"{filename} -> {target_path}\n")
+                self.log(f"이동 완료: {filename} → {year}/{os.path.basename(target_path)}")
+            except Exception as e:
+                self.log(f"오류: {filename} - {e}")
 
-        log.write("=" * 30 + "\n")
-        log.write("정리 완료\n")
+            processed += 1
+            self.update_progress(processed / total)
+            self.update_count(processed, total)
+
+        self.update_status("정리 완료되었습니다! ✓", "#00CC66")
+        self.btn_start.configure(state="normal", text="다시 정리하기")
+        self.organizing = False
+
+
+    def start_organizing_thread(self):
+        if self.organizing:
+            self.organizing = False
+            self.btn_start.configure(text="정지 중...")
+            return
+
+        folder = self.entry_path.get().strip()
+        if not folder or not os.path.exists(folder):
+            self.update_status("올바른 폴더 경로를 입력해주세요!", "red")
+            return
+
+        self.organizing = True
+        self.btn_start.configure(state="disabled", text="처리 중...")
+        self.text_log.configure(state="normal")
+        self.text_log.delete("1.0", "end")
+        self.text_log.configure(state="disabled")
+
+        self.update_status("사진 정리 중...", "#1E90FF")
+        self.progress.set(0)
+
+        thread = threading.Thread(target=self.organize_photos, args=(folder,), daemon=True)
+        thread.start()
+
 
 if __name__ == "__main__":
-    source_folder = input("정리할 폴더 경로를 입력하세요: ")
-    organize_photos(source_folder)
+    app = PhotoOrganizerApp()
+    app.root.mainloop()
